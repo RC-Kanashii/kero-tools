@@ -1,0 +1,23 @@
+#include <string>
+#include <iostream>
+#include <vector>
+
+#include "CLI/CLI.hpp"
+#include "kerotools.hpp"
+
+
+#ifndef OUTSTR_H
+#define OUTSTR_H
+
+class Outstr: public KeroTool {
+private:
+	std::string input_filename;
+	bool revcomp;
+
+public:
+	Outstr();
+	void cli_prepare(CLI::App * subapp);
+	void exec();
+};
+
+#endif

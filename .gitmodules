@@ -1,0 +1,8 @@
+[submodule "extern/CLI11"]
+	path = extern/CLI11
+	url = https://github.com/CLIUtils/CLI11.git
+	active = false
+	ignore = all
+[submodule "extern/kero-api"]
+	path = extern/kero-api
+	url = git@github.com:RC-Kanashii/kero-api.git
