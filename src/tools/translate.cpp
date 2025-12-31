@@ -32,6 +32,8 @@ const static EncodingValidator Lowercase;
 
 void Translate::cli_prepare(CLI::App * app) {
 	this->subapp = app->add_subcommand("translate", "Translate a kero file from its encoding to another one.");
+	this->subapp->disabled(true);  // Disable execution
+	this->subapp->group("");  // Hide from help output
 	CLI::Option * input_option = subapp->add_option("-i, --infile", input_filename, "The file to convert");
 	input_option->required();
 	input_option->check(CLI::ExistingFile);

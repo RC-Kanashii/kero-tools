@@ -17,6 +17,8 @@ Disjoin::Disjoin() {
 
 void Disjoin::cli_prepare(CLI::App * app) {
 	this->subapp = app->add_subcommand("disjoin", "Read the input file, and for each block in each section, rewrite n blocks, where n is the number of kmer in the block. The output file contains exactly one kmer per block.");
+	this->subapp->disabled(true);  // Disable execution
+	this->subapp->group("");  // Hide from help output
 	CLI::Option * input_option = subapp->add_option("-i, --infile", input_filename, "The file to disjoin");
 	input_option->required();
 	input_option->check(CLI::ExistingFile);

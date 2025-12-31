@@ -12,6 +12,7 @@
 class Outstr: public KeroTool {
 private:
 	std::string input_filename;
+	std::string output_filename;
 	bool revcomp;
 
 public:

@@ -64,6 +64,7 @@ struct SectionData {
     std::vector<uint64_t> n_values;
     std::vector<uint64_t> m_idx_values;
     std::vector<uint8_t> data_values;
+    std::vector<uint8_t> seq_values;  // For ROW mode: all seq data concatenated
 
     // Kero parameters
     uint64_t k;
@@ -94,11 +95,24 @@ private:
     void process_single_minimizer_section(
         uint64_t minimizer_val,
         const std::vector<KmerInfo>& kmer_infos,
-        std::vector<std::pair<std::string, uint64_t>>& results);
+        std::vector<std::pair<std::string, uint64_t>>& results,
+        const kero::Kero_Mmap_Accessor* mmap_accessor);
 
-    void decompress_section_data(const uint8_t* section_ptr, uint64_t ms_idx, SectionData& section_data);
+    void decompress_section_data(
+        const uint8_t* section_ptr,
+        uint64_t ms_idx,
+        SectionData& section_data,
+        const kero::Kero_Mmap_Accessor* mmap_accessor);
 
-    // Find k-mers in decompressed data
+    // Find k-mers in ROW mode (direct mmap access)
+    std::unordered_map<size_t, uint64_t> batch_find_kmers_in_row_mode(
+        const std::vector<KmerInfo>& kmers_to_find_batch,
+        const uint8_t* section_ptr,
+        uint64_t ms_idx,
+        const uint8_t* section_minimizer,
+        const kero::Kero_Mmap_Accessor* mmap_accessor);
+
+    // Find k-mers in decompressed data (COLUMNAR modes)
     std::unordered_map<size_t, uint64_t> batch_find_kmers_in_decompressed_data(
         const std::vector<KmerInfo>& kmers_to_find_batch,
         const SectionData& section_data);

@@ -7,7 +7,10 @@
 #include <queue>
 #include <cassert>
 #include <unordered_set>
-#include <memory> // 包含 <memory>
+#include <memory>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 
 #include "compact.hpp"
 #include "encoding.hpp"
@@ -18,7 +21,6 @@
 #include "kero-api/detail/util.hpp"
 
 using namespace std;
-
 
 Compact::Compact() {
 	input_filename = "";
@@ -747,9 +749,15 @@ void Compact::write_paths(const std::vector<std::vector<const uint8_t*>> & paths
     std::vector<uint8_t> skmer_buffer(max_skmer_bytes + 1, 0);
 	uint data_bytes = (k - m + 1) * data_size;
     std::vector<uint8_t> data_buffer(data_bytes, 0);
+	uint kmer_offset = (4 - ((k - m) % 4)) % 4;
 
+	uint path_idx = 0;
 	for (const vector<const uint8_t *> & path : paths) {
         if (path.empty()) continue;
+
+		// Clear buffers
+		memset(skmer_buffer.data(), 0, max_skmer_bytes + 1);
+		memset(data_buffer.data(), 0, data_bytes);
 
 		// Get the skmer minimizer position
 		uint64_t mini_pos = 0;
@@ -763,7 +771,11 @@ void Compact::write_paths(const std::vector<std::vector<const uint8_t*>> & paths
 
 		// Save the first kmer
 		memcpy(skmer_buffer.data(), path[0], kmer_bytes);
-		leftshift8(skmer_buffer.data(), kmer_bytes, 2 * skmer_offset);
+
+		// Left shift: remove original K-mer padding (using kmer_offset)
+		leftshift8(skmer_buffer.data(), kmer_bytes, 2 * kmer_offset);
+
+		// Right shift: add new padding required for Super-kmer (using skmer_offset)
 		rightshift8(skmer_buffer.data(), kmer_bytes + 1, 2 * skmer_offset);
 
         // Save the first data
@@ -776,9 +788,11 @@ void Compact::write_paths(const std::vector<std::vector<const uint8_t*>> & paths
 			uint compact_byte = compact_nucl_pos / 4;
 			uint compact_shift = 3 - (compact_nucl_pos % 4);
 			uint8_t last_nucl = kmer[kmer_bytes - 1] & 0b11;
+			
 			skmer_buffer[compact_byte] |= last_nucl << (2 * compact_shift);
 			memcpy(data_buffer.data() + kmer_idx * data_size, kmer + kmer_bytes, data_size);
 		}
 		sm.write_compacted_sequence_without_mini(skmer_buffer.data(), skmer_size, mini_pos, data_buffer.data());
+		path_idx++;
 	}
 }

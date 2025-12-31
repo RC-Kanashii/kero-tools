@@ -12,6 +12,8 @@ Split::Split() {
 
 void Split::cli_prepare(CLI::App * app) {
 	this->subapp = app->add_subcommand("split", "Split a kero file into one file per section.");
+	this->subapp->disabled(true);  // Disable execution
+	this->subapp->group("");  // Hide from help output
 	CLI::Option * input_option = subapp->add_option("-i, --infile", input_filename, "Input file in kero format");
 	input_option->check(CLI::ExistingFile);
 	input_option->required();
@@ -38,7 +40,7 @@ void Split::exec() {
 			Section_GV sgv(&input_file);
 		} else if (section_type == 'i') {
 			Section_Index si(&input_file);
-			si.close();	
+			si.close();
 		}
 		else {
 			// Beginning of a section with kmers. Open a new kero file

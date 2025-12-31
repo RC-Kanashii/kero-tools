@@ -14,6 +14,8 @@ Merge::Merge() {
 
 void Merge::cli_prepare(CLI::App * app) {
 	this->subapp = app->add_subcommand("merge", "Merge a list of kero files into one. All the files must have the same encoding.");
+	this->subapp->disabled(true);  // Disable execution
+	this->subapp->group("");  // Hide from help output
 
 	CLI::Option_group * group = subapp->add_option_group("input", "different ways to pass inputs to the merge command");
 	CLI::Option * input_option = group->add_option("-i, --inputs", input_filenames, "A list of input file names. The order of the file list will be preserved in the output file.");
@@ -57,7 +59,7 @@ void Merge::merge(const vector<Kero_file *> & files, string output) {
 		global_encoding[i] = tmpFile->encoding[i];
 
 	tmpFile->close();
-	
+
 	// Write header of the output
 	Kero_file outfile(output, "w");
 	outfile.set_indexation(true);

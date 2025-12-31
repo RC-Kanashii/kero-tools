@@ -14,6 +14,8 @@ Shuffle::Shuffle () {
 
 void Shuffle::cli_prepare(CLI::App * app) {
 	this->subapp = app->add_subcommand("shuffle", "Randomly shuffle the order of the sequences within each section (m and r) of a kero files.");
+	this->subapp->disabled(true);  // Disable execution
+	this->subapp->group("");  // Hide from help output
 	CLI::Option * input_option = subapp->add_option("-i, --input", input_filename, "Input KERO file");
 	input_option->required();
 	input_option->check(CLI::ExistingFile);
@@ -29,7 +31,7 @@ void Shuffle::shuffle(string input, string output) {
 	uint8_t buffer[1048576];
 	uint8_t global_encoding[4];
 
-	// Read the encoding of the input file and push it as output encoding 
+	// Read the encoding of the input file and push it as output encoding
 	Kero_file infile_enc(input, "r");
 	for (uint i=0 ; i<4 ; i++)
 		global_encoding[i] = infile_enc.encoding[i];

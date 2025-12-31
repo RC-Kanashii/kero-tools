@@ -11,6 +11,8 @@ Index::Index() {
 
 void Index::cli_prepare(CLI::App * app) {
   this->subapp = app->add_subcommand("index", "Copy a kero file and add an index of the sections");
+  this->subapp->disabled(true);  // Disable execution
+  this->subapp->group("");  // Hide from help output
   CLI::Option * input_option = subapp->add_option("-i, --infile", input_filename, "Input kero file to index.");
   input_option->required();
   input_option->check(CLI::ExistingFile);

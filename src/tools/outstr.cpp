@@ -1,6 +1,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <fstream>
 
 #include "outstr.hpp"
 #include "encoding.hpp"
@@ -11,14 +12,16 @@ using namespace std;
 
 Outstr::Outstr() {
 	input_filename = "";
+	output_filename = "";
 	revcomp = false;
 }
 
 void Outstr::cli_prepare(CLI::App * app) {
-	this->subapp = app->add_subcommand("outstr", "Output kmer sequences as string on stdout. One kmer per line is printed");
+	this->subapp = app->add_subcommand("outstr", "Output kmer sequences as string. One kmer per line is printed");
 	CLI::Option * input_option = subapp->add_option("-i, --infile", input_filename, "The file to print");
 	input_option->required();
 	input_option->check(CLI::ExistingFile);
+	subapp->add_option("-o, --outfile", output_filename, "Output text file (if not specified, output to stdout)");
 	subapp->add_flag("-c, --reverse-complement", revcomp, "Print the minimal value between a kmer and its reverse complement");
 }
 
@@ -68,7 +71,7 @@ void Outstr::exec() {
 	// Read the encoding and prepare the translator
 	Kero_reader reader = Kero_reader(input_filename);
 	Stringifyer strif(reader.get_encoding());
-	
+
 	// Prepare revcomp
 	RevComp rc(reader.get_encoding());
 	uint8_t * rc_copy = new uint8_t[1];
@@ -78,11 +81,23 @@ void Outstr::exec() {
 	uint8_t * nucleotides = nullptr;
 	uint8_t * data = nullptr;
 
+	// Open output file if specified, otherwise use stdout
+	ofstream outfile;
+	ostream* out = &cout;
+	if (!output_filename.empty()) {
+		outfile.open(output_filename);
+		if (!outfile.is_open()) {
+			cerr << "Error: Could not open output file: " << output_filename << endl;
+			return;
+		}
+		out = &outfile;
+	}
+
 	while (reader.next_kmer(nucleotides, data)) {
 
 		if (not revcomp) {
-			cout << strif.translate(nucleotides, reader.k) << " ";
-			cout << format_data(data, reader.data_size) << '\n';
+			*out << strif.translate(nucleotides, reader.k) << " ";
+			*out << format_data(data, reader.data_size) << '\n';
 		} else {
 			// Change the size of rev comp datastruct if k changes
 			if (reader.k != k) {
@@ -96,12 +111,17 @@ void Outstr::exec() {
 			rc.rev_comp(rc_copy, k);
 
 			if (inf_eq(nucleotides, rc_copy, k)) {
-				cout << strif.translate(nucleotides, k) << " ";
-				cout << format_data(data, reader.data_size) << '\n';
+				*out << strif.translate(nucleotides, k) << " ";
+				*out << format_data(data, reader.data_size) << '\n';
 			} else {
-				cout << strif.translate(rc_copy, k) << " ";
-				cout << format_data(data, reader.data_size) << '\n';
+				*out << strif.translate(rc_copy, k) << " ";
+				*out << format_data(data, reader.data_size) << '\n';
 			}
 		}
+	}
+
+	// Close output file if it was opened
+	if (outfile.is_open()) {
+		outfile.close();
 	}
 }

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <omp.h>
 
@@ -243,7 +244,7 @@ void Query::group_kmers_by_minimizer() {
         uint64_t minimizer_val;
         bool multi_mini = false;
         uint64_t leftmost_mini = 0;
-        ms->kmer_minimizer_compute(encoded_kmer_buffer, nb_kmer_bytes, 0,
+        ms->kmer_minimizer_compute(encoded_kmer_buffer, k, 0,
                                    minimizer_val, multi_mini, leftmost_mini);
         minimizer_val = kero::mask_mini(minimizer_val, m);
 
@@ -264,8 +265,7 @@ void Query::cli_prepare(CLI::App *app) {
             ->required()
             ->check(CLI::ExistingFile);
     subapp->add_flag("--no-index", is_no_index, "Do not use the index to query the k-mer.");
-    subapp->add_option("-o, --output", output_filename, "Output file for query results")
-            ->required();
+    subapp->add_option("-o, --output", output_filename, "Output file for query results (default: stdout)");
 }
 
 void Query::exec() {
@@ -284,7 +284,13 @@ void Query::exec() {
 uint64_t Query::get_without_index(uint8_t *kmer, uint64_t nb_kmer_bytes) const {
     Kero_reader reader = Kero_reader(input_filename);
     auto *tmp_kmer_bytes = new uint8_t[nb_kmer_bytes];
-    auto *cnt_bytes = new uint8_t[data_size];
+    uint8_t *cnt_bytes = nullptr;
+
+    // Only allocate cnt_bytes if data_size > 0
+    if (data_size > 0) {
+        cnt_bytes = new uint8_t[data_size];
+    }
+
     uint64_t cnt = 0;
     while (reader.has_next()) {
         reader.next_kmer(tmp_kmer_bytes, cnt_bytes);
@@ -293,15 +299,22 @@ uint64_t Query::get_without_index(uint8_t *kmer, uint64_t nb_kmer_bytes) const {
         get_revcomp_kmer(kmer, this->k, nb_kmer_bytes, this->nucl_map, revcomp_kmer);
         if (memcmp(tmp_kmer_bytes, kmer, nb_kmer_bytes) == 0 || memcmp(tmp_kmer_bytes, revcomp_kmer, nb_kmer_bytes) ==
             0) {
-            for (uint64_t i = 0; i < data_size; i++) {
-                cnt = (cnt << 8) | cnt_bytes[i];
+            // Read count if data_size > 0, otherwise set to 1 (k-mer exists)
+            if (data_size > 0) {
+                for (uint64_t i = 0; i < data_size; i++) {
+                    cnt = (cnt << 8) | cnt_bytes[i];
+                }
+            } else {
+                cnt = 1;  // K-mer found but no count data, indicate presence
             }
             break;
         }
     }
 
     delete[] tmp_kmer_bytes;
-    delete[] cnt_bytes;
+    if (cnt_bytes != nullptr) {
+        delete[] cnt_bytes;
+    }
 
     return cnt;
 }
@@ -318,7 +331,6 @@ void get_revcomp_kmer(uint8_t *kmer, uint64_t k, uint64_t nb_kmer_bytes, std::ve
         uint8_t nucl = kmer_copy[nb_kmer_bytes - 1] & 0b11;
         rightshift8(kmer_copy, nb_kmer_bytes, 2);
         revcomp_kmer[nb_kmer_bytes - 1] |= nucl_map[nucl];
-        // std::cout << "revcomp_kmer[0]: " << (short)revcomp_kmer[0] << std::endl;
         if (i < k - 1) {
             leftshift8(revcomp_kmer, nb_kmer_bytes, 2);
         }
@@ -328,10 +340,6 @@ void get_revcomp_kmer(uint8_t *kmer, uint64_t k, uint64_t nb_kmer_bytes, std::ve
     uint8_t mask = (k % 4) == 0 ? 0xFF : (1 << (k % 4) * 2) - 1;
     revcomp_kmer[0] &= mask;
 
-    std::string kmer_str = decode_sequence(kmer, k);
-    std::string revcomp_str = decode_sequence(revcomp_kmer, k);
-    // std::cout << "kmer: " << kmer_str << std::endl;
-    // std::cout << "revcomp: " << revcomp_str << std::endl;
     memcpy(result_kmer, revcomp_kmer, nb_kmer_bytes);
 }
 
@@ -419,27 +427,43 @@ void add_minimizer_standalone(
     delete[] mini;
 }
 
-void Query::process_minimizer_sections_batch(std::vector<std::pair<std::string, uint64_t> > &results) {
+void Query::process_minimizer_sections_batch(std::vector<std::pair<std::string, uint64_t>>& results) {
+    // Initialize mmap accessor (only once)
     mmap_accessor = std::make_unique<kero::Kero_Mmap_Accessor>(input_filename);
-    // Group k-mers by minimizer and process them in parallel
+
+    // Pre-extract data into vectors to avoid concurrent access to unordered_map
     std::vector<uint64_t> minimizer_values;
+    std::vector<std::vector<KmerInfo>> kmer_infos_list;
+
     minimizer_values.reserve(minimizer_to_kmers.size());
-    for (const auto &pair: minimizer_to_kmers) {
+    kmer_infos_list.reserve(minimizer_to_kmers.size());
+
+    for (const auto& pair : minimizer_to_kmers) {
         minimizer_values.push_back(pair.first);
+        kmer_infos_list.push_back(pair.second);
     }
 
-#pragma omp parallel for schedule(dynamic) default(none) shared(minimizer_values, results)
+    // Get raw pointer for OpenMP
+    const kero::Kero_Mmap_Accessor* mmap_ptr = mmap_accessor.get();
+
+#pragma omp parallel for schedule(dynamic) default(none) \
+shared(minimizer_values, kmer_infos_list, results, mmap_ptr)
     for (size_t i = 0; i < minimizer_values.size(); ++i) {
-        uint64_t minimizer_val = minimizer_values[i];
-        const auto &kmer_infos = minimizer_to_kmers[minimizer_val];
-        process_single_minimizer_section(minimizer_val, kmer_infos, results);
+        process_single_minimizer_section(
+            minimizer_values[i],
+            kmer_infos_list[i],
+            results,
+            mmap_ptr
+        );
     }
 }
 
 void Query::process_single_minimizer_section(
     uint64_t minimizer_val,
-    const std::vector<KmerInfo> &kmer_infos,
-    std::vector<std::pair<std::string, uint64_t> > &results) {
+    const std::vector<KmerInfo>& kmer_infos,
+    std::vector<std::pair<std::string, uint64_t>>& results,
+    const kero::Kero_Mmap_Accessor* mmap_accessor) {
+
     uint64_t ms_idx = sh->mpht[minimizer_val];
 
     const uint8_t *section_ptr = mmap_accessor->get_ptr() + ms_idx;
@@ -447,7 +471,9 @@ void Query::process_single_minimizer_section(
     uint8_t section_minimizer[nb_bytes_mini];
     memcpy(section_minimizer, section_ptr + 1, nb_bytes_mini);
 
-    if (kero::mask_mini(section_minimizer, m) != minimizer_val) {
+    uint64_t section_minimizer_val = kero::mask_mini(section_minimizer, m);
+
+    if (section_minimizer_val != minimizer_val) {
         // If the minimizer does not match, set all k-mers to 0
         for (const auto &kmer_info: kmer_infos) {
             results[kmer_info.original_index] = {kmer_info.kmer, 0};
@@ -455,15 +481,21 @@ void Query::process_single_minimizer_section(
         return;
     }
 
-    // Read and decompress all data columns from this section
+#ifdef KERO_MODE_ROW
+    std::unordered_map<size_t, uint64_t> batch_results =
+            batch_find_kmers_in_row_mode(kmer_infos, section_ptr, ms_idx, section_minimizer, mmap_accessor);
+#else
+    // COLUMNAR mode: Read and decompress all data columns from this section
     SectionData section_data;
-    decompress_section_data(section_ptr, ms_idx, section_data);
+    decompress_section_data(section_ptr, ms_idx, section_data, mmap_accessor);
 
     std::unordered_map<size_t, uint64_t> batch_results =
             batch_find_kmers_in_decompressed_data(kmer_infos, section_data);
+#endif
 
-    // Update results with counts from batch_results
-    for (const auto &kmer_info: kmer_infos) {
+    // Update results - Key: each kmer_info.original_index is unique in the entire results vector
+    // Because different minimizers cannot have the same original_index, this is thread-safe
+    for (const auto& kmer_info : kmer_infos) {
         uint64_t count = 0;
         // Check if this k-mer is found in the batch results
         if (auto it = batch_results.find(kmer_info.original_index); it != batch_results.end()) {
@@ -473,30 +505,35 @@ void Query::process_single_minimizer_section(
     }
 }
 
-/**
- * @brief Decompress all data columns from a minimizer section at once
- * @param section_ptr Pointer to the start of the section in mmap
- * @param ms_idx Section index in the file
- * @param section_data Output structure to store decompressed data
- */
-void Query::decompress_section_data(const uint8_t *section_ptr, uint64_t ms_idx, SectionData &section_data) {
-    uint64_t current_offset = 1; // Skip 'M' type marker
+void Query::decompress_section_data(
+    const uint8_t* section_ptr,
+    uint64_t ms_idx,
+    SectionData& section_data,
+    const kero::Kero_Mmap_Accessor* mmap_accessor) {
 
-    // Copy basic parameters
+    uint64_t current_offset = 1;
+
     section_data.k = this->k;
     section_data.m = this->m;
     section_data.max_value = this->max;
     section_data.data_size = this->data_size;
     section_data.nb_bytes_mini = (m + 3) / 4;
 
-    // Read section minimizer
     memcpy(section_data.section_minimizer, section_ptr + current_offset, section_data.nb_bytes_mini);
     current_offset += section_data.nb_bytes_mini;
 
-    // Read block count and column offsets
-    uint64_t n_col_offset, m_idx_col_offset, data_col_offset;
+    // Read block count
     kero::load_big_endian(section_ptr + current_offset, 8, section_data.nb_blocks);
     current_offset += 8;
+
+    // Initialize vectors with proper sizes
+    section_data.n_values.resize(section_data.nb_blocks);
+    section_data.m_idx_values.resize(section_data.nb_blocks);
+
+#ifdef KERO_MODE_COLUMNAR_NOCOMP
+    // COLUMNAR_NOCOMP mode: Columnar storage without integer array compression
+    // Read column offsets
+    uint64_t n_col_offset, m_idx_col_offset, data_col_offset;
     kero::load_big_endian(section_ptr + current_offset, 8, n_col_offset);
     current_offset += 8;
     kero::load_big_endian(section_ptr + current_offset, 8, m_idx_col_offset);
@@ -511,9 +548,52 @@ void Query::decompress_section_data(const uint8_t *section_ptr, uint64_t ms_idx,
     data_col_offset += ms_idx;
     section_data.seq_col_offset += ms_idx;
 
-    // Initialize vectors with proper sizes
-    section_data.n_values.resize(section_data.nb_blocks);
-    section_data.m_idx_values.resize(section_data.nb_blocks);
+    // Read N column (uncompressed)
+    uint64_t n_col_size;
+    kero::load_big_endian(mmap_accessor->get_ptr() + n_col_offset, 8, n_col_size);
+    uint64_t n_offset = n_col_offset + 8;
+    for (size_t i = 0; i < section_data.nb_blocks; i++) {
+        kero::load_big_endian(mmap_accessor->get_ptr() + n_offset, 8, section_data.n_values[i]);
+        n_offset += 8;
+    }
+
+    // Read M_idx column (uncompressed)
+    uint64_t m_idx_col_size;
+    kero::load_big_endian(mmap_accessor->get_ptr() + m_idx_col_offset, 8, m_idx_col_size);
+    uint64_t m_idx_offset = m_idx_col_offset + 8;
+    for (size_t i = 0; i < section_data.nb_blocks; i++) {
+        kero::load_big_endian(mmap_accessor->get_ptr() + m_idx_offset, 8, section_data.m_idx_values[i]);
+        m_idx_offset += 8;
+    }
+
+    // Read Data column (uncompressed) if present
+    if (section_data.data_size > 0) {
+        uint64_t data_col_size;
+        kero::load_big_endian(mmap_accessor->get_ptr() + data_col_offset, 8, data_col_size);
+        section_data.data_values.resize(data_col_size);
+        memcpy(section_data.data_values.data(),
+               mmap_accessor->get_ptr() + data_col_offset + 8, data_col_size);
+    }
+
+    // Seq column is read on-demand during k-mer search
+
+#else
+    // COLUMNAR_COMP mode: Columnar storage with integer array compression
+    // Read column offsets
+    uint64_t n_col_offset, m_idx_col_offset, data_col_offset;
+    kero::load_big_endian(section_ptr + current_offset, 8, n_col_offset);
+    current_offset += 8;
+    kero::load_big_endian(section_ptr + current_offset, 8, m_idx_col_offset);
+    current_offset += 8;
+    kero::load_big_endian(section_ptr + current_offset, 8, data_col_offset);
+    current_offset += 8;
+    kero::load_big_endian(section_ptr + current_offset, 8, section_data.seq_col_offset);
+
+    // Convert relative offsets to absolute positions
+    n_col_offset += ms_idx;
+    m_idx_col_offset += ms_idx;
+    data_col_offset += ms_idx;
+    section_data.seq_col_offset += ms_idx;
 
     // Decompress N column (number of k-mers per block)
     uint64_t compressed_size;
@@ -557,6 +637,7 @@ void Query::decompress_section_data(const uint8_t *section_ptr, uint64_t ms_idx,
             p4ndec8(compressed_buf.data(), data_buf_size, section_data.data_values.data());
         }
     }
+#endif
 }
 
 /**
@@ -601,20 +682,198 @@ void Query::slide_to_next_kmer(const uint8_t *seq_buffer, uint8_t *extracted_kme
 
 // Don't forget to add the output function implementation:
 void Query::output_results(const std::vector<std::pair<std::string, uint64_t> > &results) {
-    std::ofstream output_file(output_filename);
-    if (!output_file.is_open()) {
-        throw std::runtime_error("Could not open output file: " + output_filename);
-    }
+    // Output to stdout if no output file specified
+    if (output_filename.empty()) {
+        for (const auto &result: results) {
+            std::cout << result.first << " " << result.second << std::endl;
+        }
+    } else {
+        std::ofstream output_file(output_filename);
+        if (!output_file.is_open()) {
+            throw std::runtime_error("Could not open output file: " + output_filename);
+        }
 
-    for (const auto &result: results) {
-        output_file << result.first << " " << result.second << std::endl;
+        for (const auto &result: results) {
+            output_file << result.first << " " << result.second << std::endl;
+        }
+        output_file.close();
     }
-    output_file.close();
 }
 
 // Also add cleanup function to prevent memory leaks:
 void Query::cleanup_kmer_infos() {
-    minimizer_to_kmers.clear(); // std::vector<uint8_t> 会自动析构
+    minimizer_to_kmers.clear();
+}
+
+// Helper function to decode minimizer value (uint64_t) to ACGT string
+std::string decode_minimizer_value(uint64_t mini_val, uint64_t m) {
+    std::string result;
+    result.reserve(m);
+
+    // Extract nucleotides from the minimizer value (stored in lower bits)
+    // Nucleotides are stored from left to right (MSB to LSB)
+    for (int64_t i = m - 1; i >= 0; --i) {
+        uint8_t nucl = (mini_val >> (i * 2)) & 0x3;
+        result += const_nucleotides[nucl];
+    }
+
+    return result;
+}
+
+// Helper function to decode k-mer bytes to ACGT string
+std::string decode_kmer_bytes(const uint8_t* kmer_bytes, uint64_t k) {
+    std::string result;
+    result.reserve(k);
+
+    uint64_t bits_processed = 0;
+    uint64_t byte_idx = 0;
+    uint8_t current_byte = kmer_bytes[byte_idx];
+
+    // Calculate padding
+    uint64_t padding_bits = ((4 - (k % 4)) % 4) * 2;
+    bits_processed = padding_bits;
+
+    for (uint64_t i = 0; i < k; ++i) {
+        // Get 2 bits for current nucleotide
+        uint8_t shift = 6 - (bits_processed % 8);
+        uint8_t nucl = (current_byte >> shift) & 0x3;
+
+        // Convert to ACGT
+        result += const_nucleotides[nucl];
+
+        bits_processed += 2;
+        if (bits_processed % 8 == 0 && i < k - 1) {
+            byte_idx++;
+            current_byte = kmer_bytes[byte_idx];
+        }
+    }
+
+    return result;
+}
+
+/**
+ * @brief Query all target k-mers in ROW mode by reading rows on-demand from mmap.
+ * This function reads each row directly from mmap without pre-loading data.
+ * @param kmers_to_find_batch All k-mer information corresponding to the current minimizer.
+ * @param section_ptr Pointer to the start of the section (after section type).
+ * @param ms_idx Absolute position of the section in the file.
+ * @param section_minimizer The minimizer for this section.
+ * @param mmap_accessor Memory-mapped file accessor.
+ * @return A map from original k-mer index to count.
+ */
+std::unordered_map<size_t, uint64_t> Query::batch_find_kmers_in_row_mode(
+    const std::vector<KmerInfo> &kmers_to_find_batch,
+    const uint8_t* section_ptr,
+    uint64_t ms_idx,
+    const uint8_t* section_minimizer,
+    const kero::Kero_Mmap_Accessor* mmap_accessor) {
+
+    std::unordered_map<size_t, uint64_t> found_kmer_counts_by_original_index;
+    if (kmers_to_find_batch.empty()) {
+        return found_kmer_counts_by_original_index;
+    }
+
+    const uint64_t nb_kmer_bytes = (k + 3) / 4;
+    const uint64_t nb_bytes_mini = (m + 3) / 4;
+
+    // Prepare a lookup table for target k-mers
+    std::unordered_map<std::pair<const uint8_t *, uint8_t>, size_t, KmerHasher, KmerEqual> target_kmers_lookup;
+    for (const auto &kmer_info: kmers_to_find_batch) {
+        target_kmers_lookup[{kmer_info.encoded_kmer, nb_kmer_bytes}] = kmer_info.original_index;
+        target_kmers_lookup[{kmer_info.revcomp_kmer, nb_kmer_bytes}] = kmer_info.original_index;
+    }
+
+    // Read header: skip section type (already read), minimizer, then read nb_blocks
+    uint64_t current_offset = 1 + nb_bytes_mini;  // Skip 'M' + minimizer
+    uint64_t nb_blocks;
+    kero::load_big_endian(section_ptr + current_offset, 8, nb_blocks);
+    current_offset += 8;
+
+    // Now current_offset points to the first data row
+    uint64_t row_offset = ms_idx + current_offset;
+
+    // Prepare buffers for full sequence and extracted k-mer
+    uint64_t max_seq_size = this->max + k - 1;
+    uint64_t seq_buffer_size = bytes_from_bit_array(2, max_seq_size);
+    std::unique_ptr<uint8_t[]> full_seq_buffer_uptr(new uint8_t[seq_buffer_size]);
+    std::unique_ptr<uint8_t[]> extracted_kmer_uptr(new uint8_t[nb_kmer_bytes]);
+    uint8_t *full_seq_buffer = full_seq_buffer_uptr.get();
+    uint8_t *extracted_kmer = extracted_kmer_uptr.get();
+
+    for (uint64_t block_idx = 0; block_idx < nb_blocks; ++block_idx) {
+        uint64_t block_start_offset = row_offset;
+
+        // Read n (number of k-mers in this block)
+        uint64_t n;
+        kero::load_big_endian(mmap_accessor->get_ptr() + row_offset, 8, n);
+        row_offset += 8;
+
+        // Read m_idx (minimizer position)
+        uint64_t m_idx;
+        kero::load_big_endian(mmap_accessor->get_ptr() + row_offset, 8, m_idx);
+        row_offset += 8;
+
+        if (n == 0) {
+            continue;
+        }
+
+        // Calculate seq size and bytes
+        uint64_t seq_size_no_mini = n + k - m - 1;
+        uint64_t seq_bytes_no_mini = bytes_from_bit_array(2, seq_size_no_mini);
+
+        // Read seq (without minimizer)
+        memset(full_seq_buffer, 0, seq_buffer_size);
+        memcpy(full_seq_buffer, mmap_accessor->get_ptr() + row_offset, seq_bytes_no_mini);
+        row_offset += seq_bytes_no_mini;
+
+        // Add minimizer back to the sequence
+        add_minimizer_standalone(k, m, section_minimizer, nb_bytes_mini,
+                                 n, full_seq_buffer, m_idx);
+
+        // Calculate padding for k-mer extraction
+        uint64_t seq_size = n + k - 1;
+        uint8_t nb_seq_padding = ((4 - (seq_size % 4)) % 4) * 2;  // bits of padding in first byte
+        uint8_t nb_kmer_padding = ((4 - (k % 4)) % 4) * 2;  // bits of padding in first byte
+        uint8_t kmer_padding_mask = nb_kmer_padding == 0 ? 0xFF : (0xFF >> nb_kmer_padding);
+        int next_nucl_pos = nb_seq_padding + k * 2;
+
+        // Extract and check each k-mer in this block
+        for (uint64_t kmer_idx = 0; kmer_idx < n; ++kmer_idx) {
+            if (kmer_idx == 0) {
+                extract_first_kmer(full_seq_buffer, extracted_kmer, nb_kmer_bytes,
+                                   nb_seq_padding, nb_kmer_padding, kmer_padding_mask);
+            } else {
+                slide_to_next_kmer(full_seq_buffer, extracted_kmer, nb_kmer_bytes,
+                                   next_nucl_pos, kmer_padding_mask);
+                next_nucl_pos += 2;
+            }
+
+            // Check if this k-mer is one we're looking for
+            auto it = target_kmers_lookup.find({extracted_kmer, nb_kmer_bytes});
+            if (it != target_kmers_lookup.end()) {
+                uint64_t original_idx = it->second;
+                uint64_t count;
+
+                // Read count from data if present, otherwise set to 1 (k-mer exists)
+                if (data_size > 0) {
+                    count = 0;
+                    const uint8_t *count_ptr = mmap_accessor->get_ptr() + row_offset + (kmer_idx * data_size);
+                    for (uint64_t c = 0; c < data_size; ++c) {
+                        count = (count << 8) | count_ptr[c];
+                    }
+                } else {
+                    count = 1;  // K-mer found but no count data, indicate presence
+                }
+                found_kmer_counts_by_original_index[original_idx] = count;
+            }
+        }
+
+        // Skip data for this block
+        uint64_t data_bytes = n * data_size;
+        row_offset += data_bytes;
+    }
+
+    return found_kmer_counts_by_original_index;
 }
 
 
@@ -668,14 +927,16 @@ std::unordered_map<size_t, uint64_t> Query::batch_find_kmers_in_decompressed_dat
         uint64_t seq_bytes_no_mini = bytes_from_bit_array(2, seq_size_no_mini);
 
         memset(full_seq_buffer, 0, seq_buffer_size);
+        // Read from mmap
         memcpy(full_seq_buffer, mmap_accessor->get_ptr() + current_seq_ptr_offset, seq_bytes_no_mini);
 
         add_minimizer_standalone(k, m, section_data.section_minimizer, section_data.nb_bytes_mini,
                                  nb_kmers_in_block, full_seq_buffer, section_data.m_idx_values[block_idx]);
 
-        uint8_t nb_seq_padding = ((k + nb_kmers_in_block - 1) % 4) * 2;
-        uint8_t nb_kmer_padding = (k % 4) * 2;
-        uint8_t kmer_padding_mask = nb_kmer_padding == 0 ? 0xFF : (1 << nb_kmer_padding) - 1;
+        uint64_t seq_size = nb_kmers_in_block + k - 1;
+        uint8_t nb_seq_padding = ((4 - (seq_size % 4)) % 4) * 2;  // bits of padding in first byte
+        uint8_t nb_kmer_padding = ((4 - (k % 4)) % 4) * 2;  // bits of padding in first byte
+        uint8_t kmer_padding_mask = nb_kmer_padding == 0 ? 0xFF : (0xFF >> nb_kmer_padding);
         int next_nucl_pos = nb_seq_padding + k * 2;
 
         for (uint64_t kmer_idx = 0; kmer_idx < nb_kmers_in_block; ++kmer_idx) {
@@ -691,13 +952,18 @@ std::unordered_map<size_t, uint64_t> Query::batch_find_kmers_in_decompressed_dat
             auto it = target_kmers_lookup.find({extracted_kmer, nb_kmer_bytes});
             if (it != target_kmers_lookup.end()) {
                 uint64_t original_idx = it->second;
-                uint64_t count = 0;
+                uint64_t count;
+
+                // Read count from data if present, otherwise set to 1 (k-mer exists)
                 if (data_size > 0 && section_data.data_values.data() != nullptr) {
+                    count = 0;
                     const uint8_t *count_ptr = section_data.data_values.data() + current_data_ptr_offset + (
                                                    kmer_idx * data_size);
                     for (uint64_t c = 0; c < data_size; ++c) {
                         count = (count << 8) | count_ptr[c];
                     }
+                } else {
+                    count = 1;  // K-mer found but no count data, indicate presence
                 }
                 found_kmer_counts_by_original_index[original_idx] = count;
             }

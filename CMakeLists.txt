@@ -3,10 +3,33 @@ cmake_minimum_required(VERSION 3.19)
 project(kero-tools VERSION 0.1)
 
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose build type: Debug or Release" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose build type: Debug or Release" FORCE)
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+
+# ===== KERO Ablation Study Configuration =====
+# Set KERO storage mode for ablation experiments
+# Options: ROW, COLUMNAR_NOCOMP, COLUMNAR_COMP
+set(KERO_STORAGE_MODE "COLUMNAR_COMP" CACHE STRING
+        "KERO storage mode for ablation study: ROW, COLUMNAR_NOCOMP, or COLUMNAR_COMP")
+set_property(CACHE KERO_STORAGE_MODE PROPERTY STRINGS
+        "ROW" "COLUMNAR_NOCOMP" "COLUMNAR_COMP")
+
+# Define corresponding macro based on storage mode
+if(KERO_STORAGE_MODE STREQUAL "ROW")
+    add_compile_definitions(KERO_MODE_ROW)
+    message(STATUS "KERO Mode: Row-oriented storage (no compression)")
+elseif(KERO_STORAGE_MODE STREQUAL "COLUMNAR_NOCOMP")
+    add_compile_definitions(KERO_MODE_COLUMNAR_NOCOMP)
+    message(STATUS "KERO Mode: Columnar storage (no compression)")
+elseif(KERO_STORAGE_MODE STREQUAL "COLUMNAR_COMP")
+    add_compile_definitions(KERO_MODE_COLUMNAR_COMP)
+    message(STATUS "KERO Mode: Columnar storage + SIMD compression (default)")
+else()
+    message(FATAL_ERROR "Invalid KERO_STORAGE_MODE: ${KERO_STORAGE_MODE}. Must be ROW, COLUMNAR_NOCOMP, or COLUMNAR_COMP")
+endif()
+# ===== End KERO Ablation Study Configuration =====
 
 if(APPLE)
     set(CMAKE_XCODE_GENERATE_SCHEME ON)
@@ -35,12 +58,6 @@ if(build_type STREQUAL debug)
 
 elseif(build_type STREQUAL release)
     add_compile_options(-O3 -DNDEBUG)
-
-    if(APPLE)
-        add_compile_options(-flto)
-    else()
-        add_compile_options(-flto=auto)
-    endif()
 endif()
 
 add_subdirectory(extern/kero-api/)

@@ -68,12 +68,12 @@ int main(int argc, char** argv) {
 	// --- System calls for optimization ---
 	// Remove interactive synchronization for speedup I/O
 	// ios_base::sync_with_stdio(false);
-	// Raise the number of simultaneous file descriptors to maximum	
+	// Raise the number of simultaneous file descriptors to maximum
 	struct rlimit nb_file_descriptors;
 	getrlimit(RLIMIT_NOFILE, &nb_file_descriptors);
 	nb_file_descriptors.rlim_cur = nb_file_descriptors.rlim_max;
-	setrlimit(RLIMIT_NOFILE, &nb_file_descriptors); 
-	
+	setrlimit(RLIMIT_NOFILE, &nb_file_descriptors);
+
 
 	// --- Prepare tools ---
 	vector<KeroTool *> tools;
@@ -85,18 +85,29 @@ int main(int argc, char** argv) {
 	tools.push_back(new Instr());
 	tools.push_back(new Merge());
 	tools.push_back(new Outstr());
-	tools.push_back(new Shuffle()); 
-	tools.push_back(new Sort()); 
+	tools.push_back(new Shuffle());
+	tools.push_back(new Sort());
 	tools.push_back(new Split());
 	tools.push_back(new Translate());
 	tools.push_back(new Validate());
 	tools.push_back(new Query());
 
-	// Get the one selected
-	KeroTool * tool = parse_args(argc, argv, tools);
+	try {
+		// Get the one selected
+		KeroTool * tool = parse_args(argc, argv, tools);
 
-	if (tool != nullptr)
-		tool->exec();
+		if (tool != nullptr)
+			tool->exec();
+	} catch (const std::runtime_error& e) {
+		std::cerr << "Runtime error: " << e.what() << std::endl;
+		return 1;
+	} catch (const std::exception& e) {
+		std::cerr << "Error: " << e.what() << std::endl;
+		return 1;
+	} catch (...) {
+		std::cerr << "Unknown error occurred" << std::endl;
+		return 1;
+	}
 
 	for (KeroTool * tool : tools)
 		delete tool;
